@@ -2,20 +2,29 @@ import { Send } from "lucide-react";
 import { useState } from "react";
 
 interface Props {
-  onSend: (msg: string) => void;
+  onSend: (msg: string, selectedSnippet: string) => void;
   disabled?: boolean;
+  selectedSnippet?: string;
 }
 
-export function ChatInput({ onSend, disabled }: Props) {
+export function ChatInput({ onSend, disabled, selectedSnippet }: Props) {
   const [input, setInput] = useState("");
 
   const handleSend = () => {
     if (!input.trim() || disabled) return;
-    onSend(input);
+    onSend(input, selectedSnippet ?? "");
     setInput("");
   };
   return (
     <div className="p-3 bg-white border-t border-gray-200 mt-auto sticky bottom-0 z-20">
+      {selectedSnippet && (
+        <div className="mb-2 flex items-center gap-2">
+          <span className="inline-flex max-w-full items-center rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] text-blue-700">
+            <span className="truncate max-w-[280px]">선택됨: {selectedSnippet}</span>
+          </span>
+        </div>
+      )}
+
       <div className="flex relative rounded-xl bg-gray-50/50 border border-gray-200 focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500 transition-all group">
         <input
           type="text"

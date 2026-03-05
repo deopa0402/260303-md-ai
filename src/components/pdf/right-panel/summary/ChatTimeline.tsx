@@ -3,7 +3,17 @@ import { MarkdownRenderer } from "../../shared/MarkdownRenderer";
 
 interface Message {
   role: "user" | "ai";
+  type: "text" | "tool" | "error";
   content: string;
+  toolResult?: {
+    tool: "replace_selected_text";
+    status: "applied" | "failed";
+    before: string;
+    after: string;
+    requestId: string;
+    basedOnVersion: number | null;
+    currentVersion: number;
+  };
 }
 
 interface Props {
@@ -40,7 +50,29 @@ export function ChatTimeline({ messages, isTyping }: Props) {
               ? "bg-blue-600 text-white rounded-tr-sm" 
               : "bg-white border text-gray-800 rounded-tl-sm"
           }`}>
-            <MarkdownRenderer content={msg.content} />
+            {msg.type === "tool" && msg.toolResult ? (
+              <div className="space-y-2">
+                <p className="text-[13.5px] leading-relaxed">{msg.content}</p>
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-2.5 text-[12px] text-gray-700 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">tool: {msg.toolResult.tool}</span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                        msg.toolResult.status === "applied"
+                          ? "bg-green-100 text-green-700"
+                          : "bg-red-100 text-red-700"
+                      }`}
+                    >
+                      {msg.toolResult.status}
+                    </span>
+                  </div>
+                  <p>before: {msg.toolResult.before}</p>
+                  <p>after: {msg.toolResult.after}</p>
+                </div>
+              </div>
+            ) : (
+              <MarkdownRenderer content={msg.content} />
+            )}
           </div>
         </div>
       ))}
