@@ -1,12 +1,16 @@
 "use client";
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type ChangeEvent } from "react";
 
 type TooltipState = {
   visible: boolean;
   x: number;
   y: number;
 };
+
+type ImageAlign = "left" | "center" | "right";
+
+type ImageAction = "insert" | "replace";
 
 type GeminiResponse = {
   candidates?: Array<{
@@ -24,6 +28,8 @@ type GeminiResponse = {
 
 const COLORS = ["#111827", "#2563eb", "#dc2626", "#16a34a"];
 const SIZES = [14, 18, 24, 32];
+const IMAGE_SIZES = [25, 50, 75, 100];
+const IMAGE_ALIGNS: ImageAlign[] = ["left", "center", "right"];
 
 const isInsideEditor = (editor: HTMLDivElement, node: Node | null) => {
   if (!node) return false;
@@ -58,6 +64,8 @@ export const LeftPanel = forwardRef<LeftPanelHandle, LeftPanelProps>(function Le
   const selectedRangeRef = useRef<Range | null>(null);
   const docIdRef = useRef("left-doc-1");
   const versionRef = useRef(1);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const imageActionRef = useRef<ImageAction>("insert");
 
   const [tooltip, setTooltip] = useState<TooltipState>({
     visible: false,
@@ -66,6 +74,12 @@ export const LeftPanel = forwardRef<LeftPanelHandle, LeftPanelProps>(function Le
   });
   const [selectedText, setSelectedText] = useState("");
   const [isVisualizing, setIsVisualizing] = useState(false);
+  const [imageTooltip, setImageTooltip] = useState<TooltipState>({
+    visible: false,
+    x: 0,
+    y: 0,
+  });
+  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
 
   const buildSelectionOffsets = useCallback((range: Range) => {
     const editor = editorRef.current;
@@ -113,12 +127,181 @@ export const LeftPanel = forwardRef<LeftPanelHandle, LeftPanelProps>(function Le
     emitEditorState(selectionOverride, selectionTextOverride);
   }, [emitEditorState]);
 
+  const createImageNode = useCallback((dataUrl: string) => {
+    const wrapper = document.createElement("div");
+    wrapper.setAttribute("contenteditable", "false");
+    wrapper.dataset.editorImageId = `img-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    wrapper.dataset.imageAlign = "center";
+    wrapper.dataset.imageWidth = "100";
+    wrapper.style.marginTop = "12px";
+    wrapper.style.marginBottom = "12px";
+    wrapper.style.textAlign = "center";
+
+    const image = document.createElement("img");
+    image.src = dataUrl;
+    image.alt = "에디터 이미지";
+    image.style.width = "100%";
+    image.style.maxWidth = "560px";
+    image.style.borderRadius = "10px";
+    image.style.border = "1px solid #e5e7eb";
+    image.style.display = "inline-block";
+
+    wrapper.appendChild(image);
+    return wrapper;
+  }, []);
+
+  const updateImageTooltipByElement = useCallback((wrapper: HTMLDivElement) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const editorRect = editor.getBoundingClientRect();
+    const nodeRect = wrapper.getBoundingClientRect();
+    setImageTooltip({
+      visible: true,
+      x: nodeRect.left - editorRect.left + nodeRect.width / 2,
+      y: nodeRect.top - editorRect.top,
+    });
+  }, []);
+
+  const clearImageSelection = useCallback(() => {
+    const editor = editorRef.current;
+    if (editor) {
+      const selected = editor.querySelector('[data-editor-image-selected="true"]');
+      if (selected instanceof HTMLDivElement) {
+        selected.dataset.editorImageSelected = "false";
+        selected.style.outline = "none";
+      }
+    }
+    setSelectedImageId(null);
+    setImageTooltip((prev) => ({ ...prev, visible: false }));
+  }, []);
+
+  const getSelectedImageWrapper = useCallback(() => {
+    if (!selectedImageId) return null;
+    const editor = editorRef.current;
+    if (!editor) return null;
+    const node = editor.querySelector(`[data-editor-image-id="${selectedImageId}"]`);
+    return node instanceof HTMLDivElement ? node : null;
+  }, [selectedImageId]);
+
+  const selectImageWrapper = useCallback((wrapper: HTMLDivElement) => {
+    clearImageSelection();
+
+    setTooltip((prev) => ({ ...prev, visible: false }));
+    setSelectedText("");
+    onSelectionTextChange?.("");
+    selectedRangeRef.current = null;
+    emitEditorState(null, "");
+
+    wrapper.dataset.editorImageSelected = "true";
+    wrapper.style.outline = "2px solid #3b82f6";
+    wrapper.style.outlineOffset = "2px";
+
+    setSelectedImageId(wrapper.dataset.editorImageId ?? null);
+    updateImageTooltipByElement(wrapper);
+  }, [clearImageSelection, emitEditorState, onSelectionTextChange, updateImageTooltipByElement]);
+
+  const openImageFilePicker = useCallback((action: ImageAction) => {
+    imageActionRef.current = action;
+    imageInputRef.current?.click();
+  }, []);
+
+  const insertOrReplaceImage = useCallback((dataUrl: string) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    if (imageActionRef.current === "replace") {
+      const target = getSelectedImageWrapper();
+      if (!target) return;
+      const image = target.querySelector("img");
+      if (image instanceof HTMLImageElement) {
+        image.src = dataUrl;
+        updateImageTooltipByElement(target);
+        bumpVersionAndEmit(selectedRangeRef.current, selectedText);
+      }
+      return;
+    }
+
+    const selection = window.getSelection();
+    const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    const canInsertAtSelection =
+      Boolean(range) &&
+      Boolean(range && isInsideEditor(editor, range.commonAncestorContainer));
+
+    const imageNode = createImageNode(dataUrl);
+
+    if (canInsertAtSelection && range) {
+      const insertRange = range.cloneRange();
+      insertRange.collapse(false);
+      insertRange.insertNode(imageNode);
+      const spacer = document.createElement("p");
+      spacer.innerHTML = "<br>";
+      imageNode.insertAdjacentElement("afterend", spacer);
+    } else {
+      editor.appendChild(imageNode);
+      const spacer = document.createElement("p");
+      spacer.innerHTML = "<br>";
+      editor.appendChild(spacer);
+    }
+
+    selectImageWrapper(imageNode);
+    bumpVersionAndEmit(null, "");
+  }, [bumpVersionAndEmit, createImageNode, getSelectedImageWrapper, selectImageWrapper, selectedText, updateImageTooltipByElement]);
+
+  const applyImageWidth = useCallback((size: number) => {
+    const wrapper = getSelectedImageWrapper();
+    if (!wrapper) return;
+    const image = wrapper.querySelector("img");
+    if (!(image instanceof HTMLImageElement)) return;
+
+    wrapper.dataset.imageWidth = String(size);
+    image.style.width = `${size}%`;
+    updateImageTooltipByElement(wrapper);
+    bumpVersionAndEmit(selectedRangeRef.current, selectedText);
+  }, [bumpVersionAndEmit, getSelectedImageWrapper, selectedText, updateImageTooltipByElement]);
+
+  const applyImageAlign = useCallback((align: ImageAlign) => {
+    const wrapper = getSelectedImageWrapper();
+    if (!wrapper) return;
+
+    wrapper.dataset.imageAlign = align;
+    wrapper.style.textAlign = align;
+    updateImageTooltipByElement(wrapper);
+    bumpVersionAndEmit(selectedRangeRef.current, selectedText);
+  }, [bumpVersionAndEmit, getSelectedImageWrapper, selectedText, updateImageTooltipByElement]);
+
+  const deleteSelectedImage = useCallback(() => {
+    const wrapper = getSelectedImageWrapper();
+    if (!wrapper) return;
+    const next = wrapper.nextElementSibling;
+    wrapper.remove();
+    if (next instanceof HTMLParagraphElement && next.innerHTML === "<br>") {
+      next.remove();
+    }
+    clearImageSelection();
+    bumpVersionAndEmit(selectedRangeRef.current, selectedText);
+  }, [bumpVersionAndEmit, clearImageSelection, getSelectedImageWrapper, selectedText]);
+
+  const handleImageFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") return;
+      insertOrReplaceImage(result);
+    };
+    reader.readAsDataURL(file);
+    event.target.value = "";
+  }, [insertOrReplaceImage]);
+
   const updateSelectionState = useCallback(() => {
     const editor = editorRef.current;
     const selection = window.getSelection();
 
     if (!editor || !selection || selection.rangeCount === 0) {
       setTooltip((prev) => ({ ...prev, visible: false }));
+      setImageTooltip((prev) => ({ ...prev, visible: false }));
       emitEditorState(null, "");
       return;
     }
@@ -153,6 +336,8 @@ export const LeftPanel = forwardRef<LeftPanelHandle, LeftPanelProps>(function Le
       return;
     }
 
+    clearImageSelection();
+
     const editorRect = editor.getBoundingClientRect();
     const rangeRect = range.getBoundingClientRect();
 
@@ -165,7 +350,7 @@ export const LeftPanel = forwardRef<LeftPanelHandle, LeftPanelProps>(function Le
       x: rangeRect.left - editorRect.left + rangeRect.width / 2,
       y: rangeRect.top - editorRect.top,
     });
-  }, [emitEditorState, onSelectionTextChange]);
+  }, [clearImageSelection, emitEditorState, onSelectionTextChange]);
 
   const replaceTextInRange = useCallback((range: Range, nextText: string) => {
     const selection = window.getSelection();
@@ -255,6 +440,28 @@ export const LeftPanel = forwardRef<LeftPanelHandle, LeftPanelProps>(function Le
     emitEditorState(null, "");
   }, [emitEditorState]);
 
+  useEffect(() => {
+    const handleMouseDown = (event: MouseEvent) => {
+      const editor = editorRef.current;
+      const target = event.target;
+      if (!editor || !(target instanceof HTMLElement)) return;
+      if (!editor.contains(target)) return;
+
+      const wrapper = target.closest("[data-editor-image-id]");
+      if (wrapper instanceof HTMLDivElement) {
+        selectImageWrapper(wrapper);
+        return;
+      }
+
+      clearImageSelection();
+    };
+
+    document.addEventListener("mousedown", handleMouseDown);
+    return () => {
+      document.removeEventListener("mousedown", handleMouseDown);
+    };
+  }, [clearImageSelection, selectImageWrapper]);
+
   const applyTextStyle = (style: { color?: string; fontSize?: string }) => {
     const selection = window.getSelection();
     const editor = editorRef.current;
@@ -291,25 +498,13 @@ export const LeftPanel = forwardRef<LeftPanelHandle, LeftPanelProps>(function Le
     const range = sourceRange.cloneRange();
     range.collapse(false);
 
-    const wrapper = document.createElement("div");
-    wrapper.style.marginTop = "12px";
-    wrapper.style.marginBottom = "12px";
-    wrapper.setAttribute("contenteditable", "false");
-
-    const image = document.createElement("img");
-    image.src = `data:${mimeType};base64,${base64}`;
-    image.alt = "텍스트 시각화 이미지";
-    image.style.width = "100%";
-    image.style.maxWidth = "480px";
-    image.style.borderRadius = "10px";
-    image.style.border = "1px solid #e5e7eb";
-
-    wrapper.appendChild(image);
+    const wrapper = createImageNode(`data:${mimeType};base64,${base64}`);
     range.insertNode(wrapper);
 
     const spacer = document.createElement("p");
     spacer.innerHTML = "<br>";
     wrapper.insertAdjacentElement("afterend", spacer);
+    selectImageWrapper(wrapper);
     bumpVersionAndEmit(selectedRangeRef.current, selectedText);
   };
 
@@ -368,13 +563,20 @@ export const LeftPanel = forwardRef<LeftPanelHandle, LeftPanelProps>(function Le
 
   return (
     <section className="h-full bg-white overflow-hidden flex flex-col">
-      <header className="h-12 shrink-0 border-b border-gray-200 px-4 flex items-center">
+      <header className="h-12 shrink-0 border-b border-gray-200 px-4 flex items-center justify-between">
         <h2 className="text-xs font-semibold text-gray-700">Text Canvas (MVP)</h2>
+        <button
+          type="button"
+          onClick={() => openImageFilePicker("insert")}
+          className="rounded border border-gray-200 px-2 py-0.5 text-[11px] text-gray-700 hover:bg-gray-50"
+        >
+          이미지
+        </button>
       </header>
 
       <div className="flex-1 overflow-auto p-4 custom-scrollbar bg-gray-100/80">
         <div className="mx-auto w-full max-w-4xl rounded-xl border border-gray-200 bg-white shadow-sm p-6 md:p-8 relative min-h-[540px]">
-          {tooltip.visible && (
+          {tooltip.visible && !imageTooltip.visible && (
             <div
               className="absolute z-20 -translate-x-1/2 -translate-y-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 shadow-lg flex items-center gap-1.5"
               style={{ left: tooltip.x, top: tooltip.y - 10 }}
@@ -419,6 +621,58 @@ export const LeftPanel = forwardRef<LeftPanelHandle, LeftPanelProps>(function Le
             </div>
           )}
 
+          {imageTooltip.visible && selectedImageId && (
+            <div
+              className="absolute z-20 -translate-x-1/2 -translate-y-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 shadow-lg flex items-center gap-1.5"
+              style={{ left: imageTooltip.x, top: imageTooltip.y - 10 }}
+            >
+              {IMAGE_SIZES.map((size) => (
+                <button
+                  key={`img-size-${size}`}
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => applyImageWidth(size)}
+                  className="rounded border border-gray-200 px-2 py-0.5 text-[11px] text-gray-700 hover:bg-gray-50"
+                >
+                  {size}%
+                </button>
+              ))}
+
+              <div className="h-4 w-px bg-gray-200" />
+
+              {IMAGE_ALIGNS.map((align) => (
+                <button
+                  key={`img-align-${align}`}
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => applyImageAlign(align)}
+                  className="rounded border border-gray-200 px-2 py-0.5 text-[11px] text-gray-700 hover:bg-gray-50"
+                >
+                  {align === "left" ? "좌" : align === "center" ? "중" : "우"}
+                </button>
+              ))}
+
+              <div className="h-4 w-px bg-gray-200" />
+
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => openImageFilePicker("replace")}
+                className="rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 hover:bg-blue-100"
+              >
+                교체
+              </button>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={deleteSelectedImage}
+                className="rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700 hover:bg-red-100"
+              >
+                삭제
+              </button>
+            </div>
+          )}
+
           <div
             ref={editorRef}
             contentEditable
@@ -427,6 +681,14 @@ export const LeftPanel = forwardRef<LeftPanelHandle, LeftPanelProps>(function Le
             onInput={() => bumpVersionAndEmit(selectedRangeRef.current, selectedText)}
             className="min-h-[460px] outline-none text-gray-900 text-[18px] leading-8 before:text-gray-400 empty:before:content-[attr(data-placeholder)]"
             data-placeholder="여기에 프레젠테이션 본문 텍스트를 입력하세요..."
+          />
+
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleImageFileChange}
+            className="hidden"
           />
         </div>
       </div>
